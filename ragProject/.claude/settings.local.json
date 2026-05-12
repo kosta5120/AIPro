@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip --version)",
+      "Bash(python -c \"import pyodbc; print\\('pyodbc', pyodbc.version\\); print\\(pyodbc.drivers\\(\\)\\)\")",
+      "Bash(pip install *)",
+      "Bash(python _inspect.py)",
+      "Bash(python setup_db.py)",
+      "Bash(python _smoke.py)",
+      "Bash(python ingest.py)",
+      "Bash(ANTHROPIC_API_KEY= python query.py \"test\")",
+      "Bash(ANTHROPIC_API_KEY= python query.py \"protest\")",
+      "Bash(python -c \"import query; print\\('imports OK'\\)\")",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(USE_OLLAMA=1 python query.py \"What are people saying about Trump?\")",
+      "Bash(python query.py \"Show posts about trump\")",
+      "Bash(python dedupe.py)",
+      "Bash(python _debug_sent.py)"
+    ]
+  }
+}
