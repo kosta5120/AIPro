@@ -10,6 +10,10 @@ URL_RE = re.compile(r"https?://\S+|www\.\S+")
 WS_RE = re.compile(r"\s+")
 SENT_SPLIT_RE = re.compile(r"(?<=[\.\!\?…])\s+|\n{2,}")
 
+# RecursiveCharacterTextSplitter defaults (character-based).
+DEFAULT_CHUNK_SIZE = 600
+DEFAULT_CHUNK_OVERLAP = 120
+
 
 def clean_text(text: str, keep_urls: bool = False) -> tuple[str, list[str]]:
     """Normalize whitespace and optionally strip URLs.
@@ -388,7 +392,11 @@ def chunk_sentences(text: str, max_words: int = 120, overlap_sents: int = 1) -> 
     return chunks
 
 
-def chunk_recursive(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
+def chunk_recursive(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[str]:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     if not text:
         return []
@@ -407,8 +415,8 @@ def _breadcrumb(metadata: dict) -> str:
 def chunk_document(
     doc: dict,
     strategy: str = "fixed",
-    chunk_size: int = 1500,
-    overlap: int = 200,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict]:
     """Chunk a single document and return chunk dicts with ids and metadata."""
     if strategy == "fixed":
@@ -439,8 +447,8 @@ def chunk_document(
 def chunk_documents(
     docs: Iterable[dict],
     strategy: str = "fixed",
-    chunk_size: int = 1500,
-    overlap: int = 200,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict]:
     """Chunk every document and assign each emitted chunk a globally unique id."""
     chunks: list[dict] = []

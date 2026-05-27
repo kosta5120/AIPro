@@ -13,7 +13,13 @@ import sys
 # Allow running as a script from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from utils import load_all_docs, chunk_documents, write_jsonl  # noqa: E402
+from utils import (  # noqa: E402
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    chunk_documents,
+    load_all_docs,
+    write_jsonl,
+)
 
 DEFAULT_PERSIST_DIR = os.path.join("data", "processed", "chroma")
 DEFAULT_CHUNKS_PATH = os.path.join("data", "processed", "chunks.jsonl")
@@ -35,8 +41,8 @@ def parse_args():
         ),
     )
     p.add_argument("--chunk-strategy", choices=["fixed", "sentence", "recursive"], default="recursive")
-    p.add_argument("--chunk-size", type=int, default=1500)
-    p.add_argument("--overlap", type=int, default=200)
+    p.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
+    p.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
     p.add_argument("--max-per-source", type=int, default=1500)
     p.add_argument("--collection-name", default=DEFAULT_COLLECTION)
     p.add_argument("--persist-dir", default=DEFAULT_PERSIST_DIR)
