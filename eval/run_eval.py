@@ -59,16 +59,16 @@ ABLATION_CONFIGS = [
     {
         "name":       "dense_k3",
         "retriever":  "dense",
-        "chunk_size": 1500,
-        "overlap":    200,
+        "chunk_size": 600,
+        "overlap":    120,
         "k":          3,
         "notes":      "Dense, k=3 — focused but may miss evidence",
     },
     {
         "name":       "dense_k5",
         "retriever":  "dense",
-        "chunk_size": 1500,
-        "overlap":    200,
+        "chunk_size": 600,
+        "overlap":    120,
         "k":          5,
         "reuse":      "dense_k3",
         "notes":      "Dense, k=5 — baseline (Exp 1 mid-point, Exp 2 dense entry)",
@@ -76,8 +76,8 @@ ABLATION_CONFIGS = [
     {
         "name":       "dense_k8",
         "retriever":  "dense",
-        "chunk_size": 1500,
-        "overlap":    200,
+        "chunk_size": 600,
+        "overlap":    120,
         "k":          8,
         "reuse":      "dense_k3",
         "notes":      "Dense, k=8 — broader recall, more noise",
@@ -86,8 +86,8 @@ ABLATION_CONFIGS = [
     {
         "name":       "bm25_k5",
         "retriever":  "bm25",
-        "chunk_size": 1500,
-        "overlap":    200,
+        "chunk_size": 600,
+        "overlap":    120,
         "k":          5,
         "reuse":      "dense_k3",
         "notes":      "BM25 lexical — wins on named entities (BM25, RLHF, sklearn)",
@@ -95,8 +95,8 @@ ABLATION_CONFIGS = [
     {
         "name":       "hybrid_k5",
         "retriever":  "hybrid",
-        "chunk_size": 1500,
-        "overlap":    200,
+        "chunk_size": 600,
+        "overlap":    120,
         "k":          5,
         "reuse":      "dense_k3",
         "notes":      "Hybrid (dense + BM25, RRF fusion) — best of both",
@@ -476,7 +476,7 @@ def main() -> None:
 
         f.write(
             "*Note on chunking:* chunks are produced by LangChain's "
-            "`RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)` "
+            "`RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)` "
             "operating on each section produced by the structured PDF loader, "
             "with a [Module > Concept > Subsection] breadcrumb prepended to each chunk's text.\n\n"
         )

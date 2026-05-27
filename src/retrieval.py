@@ -23,6 +23,11 @@ DEFAULT_PERSIST_DIR = os.path.join("data", "processed", "chroma")
 DEFAULT_COLLECTION = "pdf_docs"
 DEFAULT_CHUNKS_PATH = os.path.join("data", "processed", "chunks.jsonl")
 EMBED_MODEL = "BAAI/bge-large-en-v1.5"
+RERANK_MODEL = "BAAI/bge-reranker-large"
+
+# Production two-stage retrieval: hybrid pool then cross-encoder rerank.
+INITIAL_FETCH_K = 20
+RERANK_TOP_N = 5
 
 # Reciprocal Rank Fusion constant. 60 is the standard value from Cormack et al.
 # (2009). It dampens the contribution of low-ranked items so that a doc ranked
@@ -226,3 +231,118 @@ class HybridRetriever:
 
     def count(self) -> int:
         return self.dense.count()
+
+
+# ---------------------------------------------------------------------------
+# Production retriever: LangChain ensemble (k=20) + cross-encoder rerank (top 3)
+# ---------------------------------------------------------------------------
+
+def _langchain_document(chunk: dict):
+    from langchain_core.documents import Document
+
+    meta = dict(chunk.get("metadata") or {})
+    meta["chunk_id"] = chunk["chunk_id"]
+    meta["doc_id"] = chunk.get("doc_id", "")
+    return Document(page_content=chunk.get("text", ""), metadata=meta)
+
+
+def _document_to_hit(doc, score: float = 0.0) -> dict:
+    meta = dict(doc.metadata or {})
+    chunk_id = meta.get("chunk_id") or getattr(doc, "id", None) or ""
+    return {
+        "chunk_id": chunk_id,
+        "text": doc.page_content,
+        "score": float(meta.get("relevance_score", score)),
+        "metadata": meta,
+    }
+
+
+@lru_cache(maxsize=2)
+def _build_compression_retriever(
+    persist_dir: str,
+    collection_name: str,
+    chunks_path: str,
+    initial_k: int,
+    top_n: int,
+):
+    try:
+        # LangChain <= 0.x
+        from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
+        from langchain.retrievers.document_compressors import CrossEncoderReranker
+    except Exception:
+        # LangChain v1+: legacy retrievers moved to `langchain-classic`
+        from langchain_classic.retrievers import (  # type: ignore
+            ContextualCompressionRetriever,
+            EnsembleRetriever,
+        )
+        from langchain_classic.retrievers.document_compressors import (  # type: ignore
+            CrossEncoderReranker,
+        )
+    from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.retrievers import BM25Retriever as LCBM25Retriever
+    from langchain_community.vectorstores import Chroma
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name=EMBED_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+    vectorstore = Chroma(
+        persist_directory=persist_dir,
+        collection_name=collection_name,
+        embedding_function=embeddings,
+    )
+    dense_retriever = vectorstore.as_retriever(search_kwargs={"k": initial_k})
+
+    chunks = _read_jsonl(chunks_path)
+    lc_docs = [_langchain_document(c) for c in chunks]
+    bm25_retriever = LCBM25Retriever.from_documents(lc_docs)
+    bm25_retriever.k = initial_k
+
+    ensemble = EnsembleRetriever(
+        retrievers=[dense_retriever, bm25_retriever],
+        weights=[0.5, 0.5],
+    )
+
+    cross_encoder = HuggingFaceCrossEncoder(model_name=RERANK_MODEL)
+    compressor = CrossEncoderReranker(model=cross_encoder, top_n=top_n)
+
+    return ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=ensemble,
+    )
+
+
+class RerankingRetriever:
+    """Two-stage retrieval for production RAG.
+
+    Stage 1 — :class:`EnsembleRetriever` over dense (Chroma + bge-large) and BM25,
+    each fetching ``initial_k`` (default 20) candidates.
+    Stage 2 — :class:`CrossEncoderReranker` with ``BAAI/bge-reranker-large``,
+  returning exactly ``top_n`` (default 3) chunks to generation.
+    """
+
+    def __init__(
+        self,
+        persist_dir: str = DEFAULT_PERSIST_DIR,
+        collection_name: str = DEFAULT_COLLECTION,
+        chunks_path: str = DEFAULT_CHUNKS_PATH,
+        initial_k: int = INITIAL_FETCH_K,
+        top_n: int = RERANK_TOP_N,
+    ):
+        self.persist_dir = persist_dir
+        self.collection_name = collection_name
+        self.chunks_path = chunks_path
+        self.initial_k = initial_k
+        self.top_n = top_n
+        cache_key = (persist_dir, collection_name, chunks_path, initial_k, top_n)
+        self._compression = _build_compression_retriever(*cache_key)
+
+    def retrieve(self, query: str, k: int | None = None) -> list[dict]:
+        top_n = self.top_n if k is None else k
+        docs = self._compression.invoke(query)
+        return [_document_to_hit(d) for d in docs[:top_n]]
+
+    def count(self) -> int:
+        return Retriever(self.persist_dir, self.collection_name).count()

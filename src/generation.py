@@ -10,14 +10,13 @@ DEFAULT_MODEL = os.environ.get("RAG_LLM_MODEL", "gemma3:4b")
 
 SYSTEM_PROMPT = (
     "You are a careful question-answering assistant for a PDF document corpus. "
-    "Follow these rules strictly:\n"
-    "1. Answer ONLY using the provided context chunks.\n"
-    "2. If the answer is not present in the context, reply exactly: "
-    "'The information was not found in the provided context.'\n"
-    "3. Cite the chunks you used inline using their chunk_id in square brackets, "
-    "e.g. [pdf_my_document_p5_chunk_0].\n"
-    "4. Do not invent facts, numbers, or names not present in the context.\n"
-    "5. Keep the answer concise (1-4 sentences) unless the question requires a list."
+    "Answer the user's question strictly based on the provided context chunks. "
+    "If the answer cannot be found in the given context, reply explicitly with "
+    "'I do not know'. Do not assume, extrapolate, or invent facts.\n"
+    "Be extremely precise, factual, and concise. Limit your response to a maximum "
+    "of 2-3 focused sentences.\n"
+    "Cite the chunks you used inline using their chunk_id in square brackets, "
+    "e.g. [pdf_my_document_p5_chunk_0]."
 )
 
 CITATION_RE = re.compile(r"\[([^\[\]\s,]+_chunk_\d+)\]")
