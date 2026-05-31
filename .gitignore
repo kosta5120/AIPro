@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local / IDE
+.env
+.env.*
+!.env.example
+.claude/
+.vscode/
+.idea/
+
+# Generated reports (rebuild with build_report.py)
+report.pdf
+
+# Optional backups
+eval/gold_set.jsonl.bak
