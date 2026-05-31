@@ -2,8 +2,7 @@
 MongoDB `rag_chunks` collection, and asks an LLM to answer using only
 those chunks.
 
-If no LLM key is set and Ollama is unavailable, falls back to printing
-the retrieved chunks.
+If Ollama is unavailable, falls back to printing the retrieved chunks only.
 """
 from __future__ import annotations
 
@@ -28,12 +27,8 @@ from pymongo.collection import Collection
 from sentence_transformers import SentenceTransformer
 
 from config import (
-    ANTHROPIC_API_KEY,
     AUTO_INGEST,
     EMBEDDING_MODEL,
-    GEMINI_API_KEY,
-    GEMINI_MODEL,
-    LLM_MODEL,
     MONGO_CHUNKS_COLLECTION,
     MONGO_COLLECTIONS,
     MONGO_DB,
@@ -42,7 +37,6 @@ from config import (
     OLLAMA_MODEL,
     TEMPERATURE,
     TOP_K,
-    USE_OLLAMA,
 )
 from ingest import SOURCE_MAP, run_ingest
 
@@ -340,21 +334,6 @@ def format_context(hits) -> str:
     return "\n\n".join(parts)
 
 
-def answer_with_claude(question: str, hits, temperature: float = TEMPERATURE) -> str:
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    user = f"Posts:\n\n{format_context(hits)}\n\nQuestion: {question}"
-    resp = client.messages.create(
-        model=LLM_MODEL,
-        max_tokens=1024,
-        temperature=temperature,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user}],
-    )
-    return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-
-
 def _build_sentiment_prompt(hits) -> str:
     examples = "\n\n".join(
         f"POST: {text}\nSENTIMENT: {label}"
@@ -380,40 +359,28 @@ def _build_sentiment_prompt(hits) -> str:
     )
 
 
-def _llm_complete(prompt: str) -> str:
-    """Send a prompt to whichever provider is active, return text."""
-    if USE_OLLAMA:
+def ollama_available() -> bool:
+    """Return True if the Ollama server responds."""
+    try:
         import ollama
 
-        client = ollama.Client(host=OLLAMA_HOST)
-        resp = client.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            format="json",
-        )
-        return resp["message"]["content"]
-    if GEMINI_API_KEY:
-        from google import genai
-        from google.genai import types
+        ollama.Client(host=OLLAMA_HOST).list()
+        return True
+    except Exception:
+        return False
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        resp = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        return resp.text or ""
-    if ANTHROPIC_API_KEY:
-        from anthropic import Anthropic
 
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
-            model=LLM_MODEL,
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-    return ""
+def _llm_complete(prompt: str) -> str:
+    """Send a prompt to Ollama (gemma3:4b by default), return text."""
+    import ollama
+
+    client = ollama.Client(host=OLLAMA_HOST)
+    resp = client.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+    )
+    return resp["message"]["content"]
 
 
 def classify_sentiments(hits) -> list[dict]:
@@ -507,7 +474,7 @@ def judge_relevance(question: str, hits) -> list[dict]:
     if not hits:
         return []
     fallback = [{"label": "?", "reason": ""} for _ in hits]
-    if not (USE_OLLAMA or GEMINI_API_KEY or ANTHROPIC_API_KEY):
+    if not ollama_available():
         return fallback
     try:
         raw = _llm_complete(_build_relevance_prompt(question, hits))
@@ -695,23 +662,6 @@ def answer_with_ollama(question: str, hits, temperature: float = TEMPERATURE) ->
     return resp["message"]["content"]
 
 
-def answer_with_gemini(question: str, hits, temperature: float = TEMPERATURE) -> str:
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    user = f"Posts:\n\n{format_context(hits)}\n\nQuestion: {question}"
-    resp = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=temperature,
-        ),
-    )
-    return resp.text or ""
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Ask a RAG question against the ingested social-media chunks.",
@@ -758,6 +708,14 @@ def main() -> int:
     print(f"Loaded {len(meta)} chunks ({mat.shape[1]} dims).\n")
     print(f"Generation temperature: {temperature}\n")
 
+    has_llm = ollama_available()
+    if not has_llm:
+        print(
+            f"Warning: Ollama not reachable at {OLLAMA_HOST}. "
+            f"Run `ollama serve` and `ollama pull {OLLAMA_MODEL}` — "
+            "answers, relevance, and sentiment will be skipped.\n"
+        )
+
     if args.question:
         questions = [" ".join(args.question)]
         interactive = False
@@ -782,8 +740,6 @@ def main() -> int:
 
         hits = retrieve(q, model, meta, mat)
 
-        has_llm = bool(USE_OLLAMA or GEMINI_API_KEY or ANTHROPIC_API_KEY)
-
         evaluation = evaluate_retrieval(q, hits)
         try:
             relevance = (
@@ -804,31 +760,14 @@ def main() -> int:
         print_retrieval_evaluation(evaluation, relevance)
 
         if has_llm:
-            if USE_OLLAMA:
-                provider, answer = (
-                    f"Ollama/{OLLAMA_MODEL}",
-                    answer_with_ollama(q, hits, temperature=temperature),
-                )
-            elif GEMINI_API_KEY:
-                provider, answer = (
-                    "Gemini",
-                    answer_with_gemini(q, hits, temperature=temperature),
-                )
-            else:
-                provider, answer = (
-                    "Claude",
-                    answer_with_claude(q, hits, temperature=temperature),
-                )
-        else:
-            provider, answer = None, None
-
-        if provider:
+            provider = f"Ollama/{OLLAMA_MODEL}"
+            answer = answer_with_ollama(q, hits, temperature=temperature)
             print_section_header(f"Answer ({provider})")
             pretty_print_answer(answer)
             print_section_header("Sources (the posts the model was given)")
             pretty_print_sources(hits, sentiments)
         else:
-            print_section_header("No LLM key set — showing top-K chunks only")
+            print_section_header("Ollama unavailable — showing top-K chunks only")
             pretty_print_sources(hits, sentiments)
         print()
 

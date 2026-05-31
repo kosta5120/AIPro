@@ -38,12 +38,11 @@ CHUNK_OVERLAP = 100
 # Retrieval
 TOP_K = 5
 
-# Generation — pick whichever provider has a key set in .env.
+# Generation — local LLM via Ollama (gemma3:4b by default).
 # TEMPERATURE controls the next-token probability distribution at generation
 # time. 0.0 = deterministic / greedy decoding (best for factual RAG answers),
-# ~0.7 = balanced default, >=1.0 = noticeably more creative / random. Applied
-# uniformly to Claude, Gemini, and Ollama. Can be overridden per-run with the
-# `--temperature` CLI flag on `query.py`.
+# ~0.7 = balanced default, >=1.0 = noticeably more creative / random. Can be
+# overridden per-run with the `--temperature` CLI flag on `query.py`.
 def _parse_temperature(raw: str | None, default: float = 0.7) -> float:
     if raw is None or raw == "":
         return default
@@ -55,14 +54,6 @@ def _parse_temperature(raw: str | None, default: float = 0.7) -> float:
 
 TEMPERATURE = _parse_temperature(os.getenv("TEMPERATURE"))
 
-#ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-#LLM_MODEL = "claude-haiku-4-5"
-
-#GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-#GEMINI_MODEL = "gemini-2.5-flash"
-
-# Local model via Ollama. Set USE_OLLAMA=1 in .env to prefer it over cloud APIs.
-USE_OLLAMA = os.getenv("USE_OLLAMA", "").lower() in ("1", "true", "yes")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
