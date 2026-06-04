@@ -52,6 +52,7 @@ RESULTS_DIR  = os.path.join(ROOT, "eval")
 # Two experiments:
 #   Experiment 1 — top-k variation (dense retrieval): k=3 vs k=5 vs k=8
 #   Experiment 2 — retrieval strategy at k=5: dense vs BM25 vs hybrid (RRF)
+#                  vs reranker (ensemble fetch-20 + bge-reranker-large cross-encoder)
 ABLATION_CONFIGS = [
     # --- Experiment 1: top-k variation, dense retrieval ---
     # dense_k5 serves double duty: it's the middle point of Experiment 1 AND
@@ -101,10 +102,27 @@ ABLATION_CONFIGS = [
         "reuse":      "dense_k3",
         "notes":      "Hybrid (dense + BM25, RRF fusion) — best of both",
     },
+    {
+        "name":       "reranker_k5",
+        "retriever":  "reranker",
+        "chunk_size": 600,
+        "overlap":    120,
+        "k":          5,
+        "reuse":      "dense_k3",
+        "notes":      "Ensemble (dense+BM25, fetch 20) + bge-reranker-large cross-encoder → top 5",
+    },
 ]
 
 # Maximum gold-set items used for answer-accuracy sampling (keeps eval fast).
-ANSWER_ACCURACY_SAMPLE = 20
+# Answer accuracy requires one LLM generation per sampled item, which dominates
+# runtime on CPU, so keep this small.
+ANSWER_ACCURACY_SAMPLE = 5
+
+# Answer accuracy (LLM generation) is only computed for these configs — the
+# dense baseline and the production reranker — since it's the slow part and the
+# retrieval strategy, not the LLM, is what differs across the other rows. Every
+# config still gets full Hit@k / MRR@k. Other configs show "N/A" for accuracy.
+ANSWER_ACCURACY_CONFIGS = {"dense_k5", "reranker_k5"}
 
 # Load-mode used when (re)building ablation indices. Must match the load-mode
 # the gold set was built against, otherwise chunk_ids won't match and every
@@ -264,7 +282,12 @@ def get_retriever_for(
     The chunks file path is derived from ``collection`` to match how
     ``build_index`` writes it (``data/processed/chunks_<collection>.jsonl``).
     """
-    from retrieval import Retriever, BM25Retriever, HybridRetriever
+    from retrieval import (
+        Retriever,
+        BM25Retriever,
+        HybridRetriever,
+        RerankingRetriever,
+    )
 
     chunks_path = os.path.join(
         ROOT, "data", "processed", f"chunks_{collection}.jsonl"
@@ -277,9 +300,18 @@ def get_retriever_for(
         dense = Retriever(persist_dir=persist_dir, collection_name=collection)
         sparse = BM25Retriever(chunks_path=chunks_path)
         return HybridRetriever(dense=dense, sparse=sparse)
+    if retriever_type == "reranker":
+        # Ensemble (dense + BM25) fetches INITIAL_FETCH_K candidates, then a
+        # bge-reranker-large cross-encoder re-scores them. top_n is left at the
+        # class default; evaluate_retrieval/compute_answer_accuracy pass k per call.
+        return RerankingRetriever(
+            persist_dir=persist_dir,
+            collection_name=collection,
+            chunks_path=chunks_path,
+        )
     raise ValueError(
         f"Unknown retriever type {retriever_type!r}; "
-        f"expected one of: dense, bm25, hybrid"
+        f"expected one of: dense, bm25, hybrid, reranker"
     )
 
 
@@ -287,7 +319,7 @@ def get_retriever_for(
 # Ablation runner
 # ---------------------------------------------------------------------------
 
-def run_ablation(max_per_source: int = 1500) -> list[dict]:
+def run_ablation(max_per_source: int = 1500, skip_build: bool = False) -> list[dict]:
     """Build indices and evaluate all configs. Returns a list of result dicts."""
     gold         = read_jsonl(GOLD_PATH)
     results:list[dict] = []
@@ -299,18 +331,32 @@ def run_ablation(max_per_source: int = 1500) -> list[dict]:
         pdir = os.path.join(persist_root, coll)
         retriever_type = cfg.get("retriever", "dense")
 
-        # Build index only when not reusing a previously built one.
-        if not cfg.get("reuse"):
+        # Build index only when not reusing a previously built one. With
+        # --skip-build, also skip when a built index + chunks file already exist
+        # (useful for a fast re-run when only eval logic changed).
+        chunks_path = os.path.join(
+            ROOT, "data", "processed", f"chunks_{coll}.jsonl"
+        )
+        index_exists = os.path.exists(
+            os.path.join(pdir, "chroma.sqlite3")
+        ) and os.path.exists(chunks_path)
+        if not cfg.get("reuse") and not (skip_build and index_exists):
             build_index(pdir, coll, cfg["chunk_size"], cfg["overlap"], max_per_source)
+        elif not cfg.get("reuse"):
+            print(f"  [skip-build] reusing existing index at {pdir}")
 
         retr = get_retriever_for(pdir, coll, retriever_type=retriever_type)
 
         # --- retrieval metrics ---
         metrics = evaluate_retrieval(retr, gold, k=cfg["k"])
 
-        # --- answer accuracy ---
-        print(f"  [answer-accuracy] sampling {ANSWER_ACCURACY_SAMPLE} items ...")
-        ans_acc = compute_answer_accuracy(retr, gold, k=cfg["k"])
+        # --- answer accuracy (slow: one LLM call per sample; selected configs only) ---
+        if cfg["name"] in ANSWER_ACCURACY_CONFIGS:
+            print(f"  [answer-accuracy] sampling {ANSWER_ACCURACY_SAMPLE} items ...")
+            ans_acc = compute_answer_accuracy(retr, gold, k=cfg["k"])
+        else:
+            print("  [answer-accuracy] skipped (not in ANSWER_ACCURACY_CONFIGS)")
+            ans_acc = None
 
         row = {
             "config":              cfg["name"],
@@ -430,6 +476,14 @@ def main() -> None:
             "changing the embed model, load mode, or chunk strategy."
         ),
     )
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Reuse existing built indices instead of rebuilding them. Safe for "
+            "a fast re-run when only eval/retrieval logic changed (not chunking)."
+        ),
+    )
     args = parser.parse_args()
 
     if not os.path.exists(GOLD_PATH):
@@ -442,7 +496,7 @@ def main() -> None:
             print(f"Cleaning {ablation_root}")
             shutil.rmtree(ablation_root)
 
-    rows  = run_ablation()
+    rows  = run_ablation(skip_build=args.skip_build)
     table = format_table(rows)
 
     print("\n=== Ablation results ===")
@@ -465,13 +519,18 @@ def main() -> None:
             "are passed to the LLM, trading recall against context noise.\n\n"
         )
 
-        f.write("## Experiment 2 — Retrieval strategy: dense vs BM25 vs hybrid (k=5)\n\n")
         f.write(
-            "Same chunk corpus, three different retrieval algorithms:\n"
+            "## Experiment 2 — Retrieval strategy: dense vs BM25 vs hybrid vs reranker (k=5)\n\n"
+        )
+        f.write(
+            "Same chunk corpus, four different retrieval algorithms:\n"
             "- **dense**: cosine similarity over `bge-large-en-v1.5` embeddings (semantic match)\n"
             "- **BM25**: lexical match with term-frequency saturation (wins on named entities)\n"
             "- **hybrid**: Reciprocal Rank Fusion of dense + BM25 top-20 pools (no score "
-            "normalization needed)\n\n"
+            "normalization needed)\n"
+            "- **reranker**: ensemble (dense + BM25) fetches 20 candidates, then a "
+            "`bge-reranker-large` cross-encoder re-scores them and keeps the top 5 "
+            "(improves ranking/MRR by jointly attending to query + passage)\n\n"
         )
 
         f.write(
@@ -486,8 +545,10 @@ def main() -> None:
         f.write(
             "> **Answer accuracy** = mean token-level F1 between the generated answer "
             f"and the reference answer, sampled over the first "
-            f"{ANSWER_ACCURACY_SAMPLE} grounded gold-set items.\n"
-            "> `N/A` means Ollama was unavailable during evaluation.\n"
+            f"{ANSWER_ACCURACY_SAMPLE} grounded gold-set items, computed only for "
+            f"the {', '.join(sorted(ANSWER_ACCURACY_CONFIGS))} configs.\n"
+            "> `N/A` means the config was not sampled for answer accuracy, or "
+            "Ollama was unavailable during evaluation.\n"
         )
     print(f"\nWrote {results_path}")
 
